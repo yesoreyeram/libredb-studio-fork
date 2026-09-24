@@ -6,6 +6,7 @@ import { isSelectQuery } from "@/lib/db/utils/query-limiter";
 import { createErrorResponse } from "@/lib/api/errors";
 import { resolveConnection } from "@/lib/seed/resolve-connection";
 import { guardRoute } from "@/lib/api/require-session";
+import { logger } from "@/lib/logger";
 import type { DatabaseType, QueryWarning } from "@/lib/types";
 import type { DatabaseProvider } from "@/lib/db/types";
 
@@ -143,7 +144,25 @@ export async function POST(req: NextRequest) {
       results.push(outcome);
 
       // Stop execution on error
-      if (outcome.status === "error") break;
+      if (outcome.status === "error") {
+        // A statement that fails mid-script is returned in the 200 body and recorded
+        // nowhere else: this route never throws for it, so no `createErrorResponse`
+        // line is produced and the failure lived only in the browser. One warn line
+        // per failing script - the statement's position and the engine's own message,
+        // never the SQL text - is what makes "the migration stopped at statement 7"
+        // answerable from the log stream without a reproducer.
+        logger.warn("Multi-statement query stopped on a failing statement", {
+          route: "POST /api/db/multi-query",
+          connectionId: connection.id,
+          provider: connection.type,
+          statementIndex: outcome.index,
+          startLine: outcome.startLine,
+          duration: outcome.executionTime,
+          statementCount: statements.length,
+          error: outcome.error,
+        });
+        break;
+      }
     }
 
     // Return the last successful result with rows as the main result (for ResultsGrid)

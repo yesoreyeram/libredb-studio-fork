@@ -1,5 +1,6 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
 import { createMockRequest, parseResponseJSON } from "../../helpers/mock-next";
+import { logger } from "@/lib/logger";
 import { createMockProvider } from "../../helpers/mock-provider";
 import { clearRateLimitState } from "@/lib/api/rate-limit";
 import {
@@ -94,9 +95,12 @@ const validConnection = {
 };
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+let warnSpy: ReturnType<typeof spyOn<typeof logger, "warn">>;
+
 describe("POST /api/db/multi-query", () => {
   beforeEach(() => {
     clearRateLimitState();
+    warnSpy = spyOn(logger, "warn").mockImplementation(() => {});
     mockGetOrCreateProvider.mockClear();
     (mockProvider.query as ReturnType<typeof mock>).mockClear();
     (mockProvider.prepareQuery as ReturnType<typeof mock>).mockClear();
@@ -119,6 +123,10 @@ describe("POST /api/db/multi-query", () => {
       limit: 50,
       offset: 0,
     }));
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   test("returns 401 when no session exists", async () => {
@@ -326,6 +334,43 @@ describe("POST /api/db/multi-query", () => {
     expect(data.statements[0].status).toBe("success");
     expect(data.statements[1].status).toBe("error");
     expect(data.statements[1].error).toContain("Syntax error");
+  });
+
+  test("a failed statement is recorded server-side with its position, not only returned to the grid", async () => {
+    // The route answers 200 with hasError and never throws for a per-statement failure,
+    // so nothing reached createErrorResponse: without this line the only record of a
+    // script that died at statement N was the browser that ran it.
+    let callCount = 0;
+    (mockProvider.query as ReturnType<typeof mock>).mockImplementation(async () => {
+      callCount++;
+      if (callCount === 2) {
+        throw new Error("Syntax error in statement 2");
+      }
+      return { rows: [], fields: [], rowCount: 0, executionTime: 5 };
+    });
+
+    const req = createMockRequest("/api/db/multi-query", {
+      method: "POST",
+      body: {
+        connection: validConnection,
+        sql: "INSERT INTO a VALUES (1); BAD SQL HERE; SELECT * FROM b",
+      },
+    });
+
+    await POST(req as never);
+
+    const logged = warnSpy.mock.calls.find(
+      (call) => call[0] === "Multi-statement query stopped on a failing statement",
+    );
+    expect(logged).toBeDefined();
+    expect(logged?.[1]).toMatchObject({
+      route: "POST /api/db/multi-query",
+      connectionId: "test-1",
+      provider: "postgres",
+      statementIndex: 1,
+      statementCount: 3,
+      error: "Syntax error in statement 2",
+    });
   });
 
   test("missing connection returns 400", async () => {

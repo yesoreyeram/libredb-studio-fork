@@ -1,5 +1,6 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
 import { createMockRequest, parseResponseJSON } from "../../helpers/mock-next";
+import { logger } from "@/lib/logger";
 import { createMockProvider } from "../../helpers/mock-provider";
 import { DatabaseConfigError } from "@/lib/db/errors";
 import { clearRateLimitState } from "@/lib/api/rate-limit";
@@ -95,9 +96,12 @@ const validConnection = {
 };
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+let warnSpy: ReturnType<typeof spyOn<typeof logger, "warn">>;
+
 describe("POST /api/db/test-connection", () => {
   beforeEach(() => {
     clearRateLimitState();
+    warnSpy = spyOn(logger, "warn").mockImplementation(() => {});
     mockCreateDatabaseProvider.mockClear();
     mockWithOneShotTunnel.mockClear();
     disconnectsAtScopeExit = -1;
@@ -132,6 +136,10 @@ describe("POST /api/db/test-connection", () => {
       slowQueries: [],
       activeSessions: [],
     }));
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   test("returns 401 when no session exists", async () => {
@@ -260,6 +268,20 @@ describe("POST /api/db/test-connection", () => {
     expect(data.message).toContain("Keyspace system_views does not exist");
     // No latency, because the read it would have measured did not complete.
     expect(data.latency).toBeUndefined();
+
+    // The user sees the toast; the operator gets a record naming the connection and the
+    // server's own sentence, so "this engine connects but has no health surface" is
+    // answerable from the log stream instead of a live reproducer.
+    const logged = warnSpy.mock.calls.find(
+      (call) => call[0] === "Connection test degraded: server answered no health data",
+    );
+    expect(logged).toBeDefined();
+    expect(logged?.[1]).toMatchObject({
+      route: "POST /api/db/test-connection",
+      connectionId: "test-1",
+      provider: "postgres",
+      error: "Keyspace system_views does not exist",
+    });
   });
 
   test("a connect that fails is still a failure, degraded by nothing", async () => {

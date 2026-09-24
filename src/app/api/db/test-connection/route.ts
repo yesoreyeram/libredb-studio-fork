@@ -3,6 +3,7 @@ import { createDatabaseProvider, findOpenSingleWriterProvider, withOneShotTunnel
 import { createErrorResponse } from "@/lib/api/errors";
 import { resolveConnection } from "@/lib/seed/resolve-connection";
 import { guardRoute } from "@/lib/api/require-session";
+import { logger } from "@/lib/logger";
 
 export async function POST(req: NextRequest) {
   // Moved ahead of req.json(): an unauthenticated caller no longer gets a body parsed on its
@@ -85,6 +86,19 @@ export async function POST(req: NextRequest) {
           await provider.getHealth();
         } catch (healthError) {
           await release();
+
+          // The response tells the USER the connection is usable; nothing told the
+          // operator that this engine connects but answers no health data. That outcome
+          // is a real per-engine event (some engines expose no health surface) and it
+          // previously existed only in the browser's toast. One warn line names the
+          // connection and the server's own sentence, so a report of "the save button is
+          // disabled" is answerable from the log stream.
+          logger.warn("Connection test degraded: server answered no health data", {
+            route: "POST /api/db/test-connection",
+            connectionId: connection.id,
+            provider: connection.type,
+            error: healthError instanceof Error ? healthError.message : String(healthError),
+          });
 
           return NextResponse.json({
             success: true,

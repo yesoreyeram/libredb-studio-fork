@@ -97,6 +97,17 @@ export async function POST(request: Request) {
             databaseSizeBytes,
           };
         } catch (err) {
+          // The dashboard shows this failure once, live; a response is a point-in-time
+          // artifact and records nothing. One warn line per failing connection gives the
+          // operator the connection id, type and latency to correlate against the
+          // provider's own errors - and a historical record the admin view never keeps.
+          logger.warn("Fleet health check failed for a connection", {
+            route: "POST /api/admin/fleet-health",
+            connectionId: conn.id,
+            provider: conn.type,
+            duration: Date.now() - start,
+            error: err instanceof Error ? err.message : String(err),
+          });
           return {
             connectionId: conn.id,
             connectionName: conn.name,
