@@ -1,5 +1,6 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from "bun:test";
 import { createMockRequest, parseResponseJSON } from "../../helpers/mock-next";
+import { logger } from "@/lib/logger";
 import { createMockProvider } from "../../helpers/mock-provider";
 import { clearRateLimitState } from "@/lib/api/rate-limit";
 import {
@@ -85,9 +86,12 @@ const connections = [
 ];
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+let warnSpy: ReturnType<typeof spyOn<typeof logger, "warn">>;
+
 describe("POST /api/admin/fleet-health", () => {
   beforeEach(() => {
     clearRateLimitState();
+    warnSpy = spyOn(logger, "warn").mockImplementation(() => {});
     mockGetSession.mockClear();
     mockGetOrCreateProvider.mockClear();
     mockGetSession.mockImplementation(
@@ -95,6 +99,10 @@ describe("POST /api/admin/fleet-health", () => {
     );
     mockGetOrCreateProvider.mockImplementation(async () => mockProvider);
     (mockProvider.getHealth as ReturnType<typeof mock>).mockClear();
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   test("returns health results for all connections as admin", async () => {
@@ -252,6 +260,17 @@ describe("POST /api/admin/fleet-health", () => {
     const errorItem = data.results.find((r) => r.status === "error");
     expect(errorItem).toBeDefined();
     expect(errorItem!.error).toContain("Connection refused");
+
+    // A response is point-in-time; the log is the historical record naming the failing
+    // connection so it can be correlated with the provider's own errors.
+    const logged = warnSpy.mock.calls.find((call) => call[0] === "Fleet health check failed for a connection");
+    expect(logged).toBeDefined();
+    expect(logged?.[1]).toMatchObject({
+      route: "POST /api/admin/fleet-health",
+      connectionId: "conn-1",
+      provider: "postgres",
+      error: "Connection refused",
+    });
   });
 
   test("invalid JSON body returns 500", async () => {
