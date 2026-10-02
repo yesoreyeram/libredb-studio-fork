@@ -180,7 +180,11 @@ jobs:
         # Linted against the manifest as Flathub receives it (release URLs and
         # checksums), not the local variant that is built below.
         run: |
-          appstreamcli validate build/flatpak/org.libredb.Studio.metainfo.xml
+          # --no-net: appstreamcli otherwise probes every <url> over the network,
+          # so a container that cannot reach a host at that moment fails the step
+          # with a url-not-reachable warning even though the metainfo is valid.
+          # The Flathub pipeline fetches these URLs when the manifest is submitted.
+          appstreamcli validate --no-net build/flatpak/org.libredb.Studio.metainfo.xml
           flatpak-builder-lint manifest build/flatpak/org.libredb.Studio.yml
 
       - name: Build the Flatpak
